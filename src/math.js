@@ -38,7 +38,7 @@ function clamp(value, min, max) {
 }
 
 function uniqueSorted(arr) {
-  return Array.from(new Set(arr)).sort((a, b) => a - b);
+  return Array.from(new Set(arr)).sort();
 }
 
 module.exports = {
