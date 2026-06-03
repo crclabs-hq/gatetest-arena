@@ -1,13 +1,10 @@
-name: AI CI Fixer
+# ============================================================================
+# GATETEST AI CI-FIXER — STANDALONE INTEGRATION TEMPLATE
+# ============================================================================
+# Drop-in workflow that watches the target repo's "CI" workflow and, when it
+# fails, asks Claude to repair the breakage and opens a fix PR.
 
-# Triggered after the main CI workflow completes. Activates automatically
-# when ANTHROPIC_API_KEY is set as a repo secret — customer brings their own
-# key, the presence of the key IS the opt-in. No second flag needed.
-#
-# Escape hatch: set the GATETEST_AI_CI_FIXER repository variable to "0" to
-# explicitly disable even when the key is present (useful if a customer is
-# burning through tokens). Any other value (including "1" or unset) leaves
-# the fixer enabled.
+name: AI CI Fixer
 
 on:
   workflow_run:
@@ -16,22 +13,21 @@ on:
       - completed
 
 permissions:
-  contents:       write
-  pull-requests:  write
-  issues:         write
-  actions:        read
+  contents:      write
+  pull-requests: write
+  issues:        write
+  actions:       read
 
 jobs:
   ai-fixer:
     name: AI CI Fixer
     runs-on: ubuntu-latest
-    # Only run on failed CI runs.
     if: ${{ github.event.workflow_run.conclusion == 'failure' }}
     env:
       ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
       GATETEST_AI_CI_FIXER: ${{ vars.GATETEST_AI_CI_FIXER || '' }}
     steps:
-      - name: Check ANTHROPIC_API_KEY presence + opt-out flag
+      - name: Gate on ANTHROPIC_API_KEY + opt-out flag
         id: gate
         run: |
           if [ -z "${ANTHROPIC_API_KEY}" ]; then
@@ -46,25 +42,39 @@ jobs:
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout failing branch
+      - name: Checkout failing branch of target repo
         if: steps.gate.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
-          ref:         ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0
-          # Keep the GITHUB_TOKEN around so `git push` can authenticate.
+          ref:                 ${{ github.event.workflow_run.head_sha }}
+          fetch-depth:         0
           persist-credentials: true
 
-      - name: Setup Node
+      - name: Setup Node.js
         if: steps.gate.outputs.skip != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
 
-      - name: Install dependencies
+      - name: Clone GateTest (single source of truth)
         if: steps.gate.outputs.skip != 'true'
-        run: npm ci
+        env:
+          GATETEST_TOKEN: ${{ secrets.GATETEST_TOKEN }}
+        run: |
+          if [ -n "$GATETEST_TOKEN" ]; then
+            git clone --depth 1 "https://x-access-token:${GATETEST_TOKEN}@github.com/crclabs-hq/gatetest.git" "$RUNNER_TEMP/gatetest"
+          else
+            git clone --depth 1 "https://github.com/crclabs-hq/gatetest.git" "$RUNNER_TEMP/gatetest"
+          fi
+          echo "GATETEST_HOME=$RUNNER_TEMP/gatetest" >> "$GITHUB_ENV"
+
+      - name: Install fixer dependencies
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          cd "$GATETEST_HOME"
+          npm ci --omit=dev --ignore-scripts 2>/dev/null \
+            || npm install --production --ignore-scripts 2>/dev/null \
+            || true
 
       - name: Run AI CI-fixer
         if: steps.gate.outputs.skip != 'true' && env.ANTHROPIC_API_KEY != ''
@@ -73,5 +83,5 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           WORKFLOW_RUN_ID:   ${{ github.event.workflow_run.id }}
           MAX_FIX_ATTEMPTS:  '3'
-          CLAUDE_MODEL:      'claude-opus-4-7'
-        run: node scripts/ai-ci-fixer.js
+          CLAUDE_MODEL:      'claude-sonnet-4-7'
+        run: node "$GATETEST_HOME/scripts/ai-ci-fixer.js"
