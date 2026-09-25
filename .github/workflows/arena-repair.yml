@@ -70,6 +70,7 @@ jobs:
           set -uo pipefail
 
           MARKER='<!-- arena-repair -->'
+          NL=$'\n'
           MAX_PRS=3
           processed=0
 
@@ -113,8 +114,7 @@ jobs:
             if node --test tests/*.test.js > /tmp/test-out-"$NUM".log 2>&1; then
               echo "Tests already pass on PR #$NUM."
               if ! printf '%s' "$EXISTING_COMMENTS" | grep -qF "$MARKER"; then
-                gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MARKER
-already green: \`node --test tests/*.test.js\` passes on this branch as-is. No fix needed."
+                gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "${MARKER}${NL}already green: \`node --test tests/*.test.js\` passes on this branch as-is. No fix needed."
               fi
               echo "::endgroup::"
               continue
@@ -124,8 +124,7 @@ already green: \`node --test tests/*.test.js\` passes on this branch as-is. No f
 
             if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
               echo "::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
-              gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MARKER
-::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
+              gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "${MARKER}${NL}::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
               echo "::endgroup::"
               continue
             fi
@@ -148,8 +147,7 @@ already green: \`node --test tests/*.test.js\` passes on this branch as-is. No f
                  node "$GATETEST_HOME/scripts/ai-ci-fixer.js" > "$FIXER_LOG" 2>&1; then
               if grep -qE '401|403|invalid.*key|unauthorized' -i "$FIXER_LOG"; then
                 echo "::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
-                gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MARKER
-::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
+                gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "${MARKER}${NL}::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
                 echo "::endgroup::"
                 continue
               fi
@@ -163,21 +161,18 @@ already green: \`node --test tests/*.test.js\` passes on this branch as-is. No f
                 git push origin "HEAD:$BRANCH"
                 SHA=$(git rev-parse HEAD)
                 SUMMARY=$(grep -E '^# (pass|fail) ' /tmp/test-out-"$NUM"-after.log | tr '\n' ' ')
-                gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MARKER
-Fixed and pushed. Tests: ${SUMMARY:-all green}. Commit: \`$SHA\`"
+                gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "${MARKER}${NL}Fixed and pushed. Tests: ${SUMMARY:-all green}. Commit: \`$SHA\`"
                 # Close the loop: a green fix merges here, because the
                 # check_suite-driven auto-merge never fires for bot PRs
                 # (their CI never runs — see the header). GITHUB_TOKEN may
                 # merge; it only cannot trigger further workflows.
-                gh pr merge "$NUM" --repo "$GITHUB_REPOSITORY" --squash --subject "arena(fix): $PATTERN"                   || echo "::warning::PR #$NUM fixed but not merged (branch protection or conflict) — left open"
+                gh pr merge "$NUM" --repo "$GITHUB_REPOSITORY" --squash --subject "arena(fix): $PATTERN" || echo "::warning::PR #$NUM fixed but not merged (branch protection or conflict) — left open"
               else
-                gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MARKER
-Tests pass after fixer ran, but it produced no diff to commit."
+                gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "${MARKER}${NL}Tests pass after fixer ran, but it produced no diff to commit."
               fi
             else
               FAILING=$(grep -E '^not ok' /tmp/test-out-"$NUM"-after.log | sed -E 's/^not ok [0-9]+ - //' | tr '\n' '; ')
-              gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MARKER
-Fixer ran but tests still fail: ${FAILING:-see workflow log}. Leaving PR open for the next cycle."
+              gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "${MARKER}${NL}Fixer ran but tests still fail: ${FAILING:-see workflow log}. Leaving PR open for the next cycle."
             fi
 
             echo "::endgroup::"
