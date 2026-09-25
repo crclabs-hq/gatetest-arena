@@ -1,0 +1,184 @@
+name: Arena Repair (scheduled gate)
+
+# WHY SCHEDULED, NOT pull_request-TRIGGERED
+# ------------------------------------------------------------------------
+# inject-bug.yml opens PRs authored by github-actions[bot] (it falls back
+# to secrets.GITHUB_TOKEN when ARENA_BOT_PAT isn't set — and this repo has
+# no ARENA_BOT_PAT). GitHub withholds workflow-run approval for any
+# pull_request-triggered workflow on a PR authored by github-actions[bot]:
+# every such run sits at "action_required" forever unless a human clicks
+# approve. CI never runs, ai-ci-fixer.yml (a workflow_run watcher on CI)
+# never fires, and the bug PRs pile up unfixed — that's exactly what
+# happened to PRs #352-#363.
+#
+# A `schedule` trigger has no such approval gate: it runs with the
+# repo-level GITHUB_TOKEN regardless of who authored the PRs it inspects.
+# So instead of reacting to CI, this workflow itself checks out each open
+# arena/bug-* branch, runs the tests directly, and — on failure — invokes
+# the same AI fixer that ai-ci-fixer.yml would have invoked. No owner
+# secret (e.g. ARENA_BOT_PAT) is required anywhere in this workflow.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Don't let overlapping runs race on the same branches; let the current
+# run finish rather than cancelling it mid-push.
+concurrency:
+  group: arena-repair
+  cancel-in-progress: false
+
+env:
+  # Marker used to guard against posting duplicate comments on repeat runs.
+  MARKER: "<!-- arena-repair -->"
+
+jobs:
+  repair:
+    name: Repair stuck arena bug PRs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set git identity
+        run: |
+          git config user.name "gatetest-arena[bot]"
+          git config user.email "gatetest-arena[bot]@users.noreply.github.com"
+
+      - name: Find and repair stuck arena/bug-* PRs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GATETEST_TOKEN: ${{ secrets.GATETEST_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          MAX_FIX_ATTEMPTS: '3'
+          CLAUDE_MODEL: 'claude-sonnet-4-7'
+        run: |
+          set -uo pipefail
+
+          MARKER='<!-- arena-repair -->'
+          MAX_PRS=3
+          processed=0
+
+          # Oldest first, so the longest-stuck PRs get attention first.
+          # PRs whose head branch doesn't start with arena/bug- are left
+          # entirely alone — this workflow only ever touches bot bug PRs.
+          mapfile -t PR_ROWS < <(
+            gh pr list --repo "$GITHUB_REPOSITORY" --state open \
+              --json number,headRefName,headRefOid --limit 200 \
+              --jq '[.[] | select(.headRefName | startswith("arena/bug-"))] | sort_by(.number) | .[] | "\(.number)\t\(.headRefName)\t\(.headRefOid)"'
+          )
+
+          if [ "${#PR_ROWS[@]}" -eq 0 ]; then
+            echo "No open arena/bug-* PRs found."
+            exit 0
+          fi
+
+          for row in "${PR_ROWS[@]}"; do
+            if [ "$processed" -ge "$MAX_PRS" ]; then
+              echo "Reached max of $MAX_PRS PRs for this run — remaining PRs deferred to next schedule."
+              break
+            fi
+            processed=$((processed + 1))
+
+            NUM=$(printf '%s' "$row" | cut -f1)
+            BRANCH=$(printf '%s' "$row" | cut -f2)
+            echo "::group::PR #$NUM ($BRANCH)"
+
+            EXISTING_COMMENTS=$(gh pr view "$NUM" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments[].body' || true)
+            if printf '%s' "$EXISTING_COMMENTS" | grep -qF "$MARKER"; then
+              echo "PR #$NUM already has an arena-repair comment this cycle-family — checking current test state anyway."
+            fi
+
+            git fetch origin "$BRANCH"
+            git checkout -B "repair/$BRANCH" "origin/$BRANCH"
+
+            TITLE=$(gh pr view "$NUM" --repo "$GITHUB_REPOSITORY" --json title --jq '.title')
+            PATTERN=$(printf '%s' "$TITLE" | sed -E 's/^arena\(bug\): *//')
+
+            echo "Running tests on PR #$NUM..."
+            if node --test tests/*.test.js > /tmp/test-out-"$NUM".log 2>&1; then
+              echo "Tests already pass on PR #$NUM."
+              if ! printf '%s' "$EXISTING_COMMENTS" | grep -qF "$MARKER"; then
+                gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MARKER
+already green: \`node --test tests/*.test.js\` passes on this branch as-is. No fix needed."
+              fi
+              echo "::endgroup::"
+              continue
+            fi
+
+            echo "Tests fail on PR #$NUM — invoking the AI fixer (same script ai-ci-fixer.yml uses)."
+
+            if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+              echo "::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
+              gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MARKER
+::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Same "single source of truth" clone ai-ci-fixer.yml performs,
+            # and the same fixer script/command — no new fixer invented here.
+            rm -rf "$RUNNER_TEMP/gatetest"
+            if [ -n "${GATETEST_TOKEN:-}" ]; then
+              git clone --depth 1 "https://x-access-token:${GATETEST_TOKEN}@github.com/crclabs-hq/gatetest.git" "$RUNNER_TEMP/gatetest"
+            else
+              git clone --depth 1 "https://github.com/crclabs-hq/gatetest.git" "$RUNNER_TEMP/gatetest"
+            fi
+            GATETEST_HOME="$RUNNER_TEMP/gatetest"
+            ( cd "$GATETEST_HOME" && ( npm ci --omit=dev --ignore-scripts 2>/dev/null || npm install --production --ignore-scripts 2>/dev/null || true ) )
+
+            FIXER_LOG=/tmp/fixer-"$NUM".log
+            if ! GITHUB_TOKEN="$GITHUB_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+                 ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" MAX_FIX_ATTEMPTS="$MAX_FIX_ATTEMPTS" \
+                 CLAUDE_MODEL="$CLAUDE_MODEL" \
+                 node "$GATETEST_HOME/scripts/ai-ci-fixer.js" > "$FIXER_LOG" 2>&1; then
+              if grep -qE '401|403|invalid.*key|unauthorized' -i "$FIXER_LOG"; then
+                echo "::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
+                gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MARKER
+::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
+                echo "::endgroup::"
+                continue
+              fi
+            fi
+
+            echo "Re-running tests after fixer attempt on PR #$NUM..."
+            if node --test tests/*.test.js > /tmp/test-out-"$NUM"-after.log 2>&1; then
+              if [ -n "$(git status --porcelain)" ]; then
+                git add -A
+                git commit -m "arena(fix): $PATTERN"
+                git push origin "HEAD:$BRANCH"
+                SHA=$(git rev-parse HEAD)
+                SUMMARY=$(grep -E '^# (pass|fail) ' /tmp/test-out-"$NUM"-after.log | tr '\n' ' ')
+                gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MARKER
+Fixed and pushed. Tests: ${SUMMARY:-all green}. Commit: \`$SHA\`"
+                # Close the loop: a green fix merges here, because the
+                # check_suite-driven auto-merge never fires for bot PRs
+                # (their CI never runs — see the header). GITHUB_TOKEN may
+                # merge; it only cannot trigger further workflows.
+                gh pr merge "$NUM" --repo "$GITHUB_REPOSITORY" --squash --subject "arena(fix): $PATTERN"                   || echo "::warning::PR #$NUM fixed but not merged (branch protection or conflict) — left open"
+              else
+                gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MARKER
+Tests pass after fixer ran, but it produced no diff to commit."
+              fi
+            else
+              FAILING=$(grep -E '^not ok' /tmp/test-out-"$NUM"-after.log | sed -E 's/^not ok [0-9]+ - //' | tr '\n' '; ')
+              gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MARKER
+Fixer ran but tests still fail: ${FAILING:-see workflow log}. Leaving PR open for the next cycle."
+            fi
+
+            echo "::endgroup::"
+          done

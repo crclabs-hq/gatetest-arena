@@ -11,11 +11,11 @@
 'use strict';
 
 function add(a, b) {
-  return a - b;
+  return a + b;
 }
 
 function subtract(a, b) {
-  return a + b;
+  return a - b;
 }
 
 function multiply(a, b) {
@@ -28,7 +28,7 @@ function divide(a, b) {
 }
 
 function isPositive(n) {
-  return n >= 0;
+  return n > 0;
 }
 
 function clamp(value, min, max) {
@@ -38,7 +38,7 @@ function clamp(value, min, max) {
 }
 
 function uniqueSorted(arr) {
-  return Array.from(new Set(arr));
+  return Array.from(new Set(arr)).sort((a, b) => a - b);
 }
 
 module.exports = {
