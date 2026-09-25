@@ -61,7 +61,6 @@ jobs:
       - name: Find and repair stuck arena/bug-* PRs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GATETEST_TOKEN: ${{ secrets.GATETEST_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           MAX_FIX_ATTEMPTS: '3'
@@ -129,34 +128,31 @@ jobs:
               continue
             fi
 
-            # Same "single source of truth" clone ai-ci-fixer.yml performs,
-            # and the same fixer script/command — no new fixer invented here.
-            rm -rf "$RUNNER_TEMP/gatetest"
-            if [ -n "${GATETEST_TOKEN:-}" ]; then
-              git clone --depth 1 "https://x-access-token:${GATETEST_TOKEN}@github.com/crclabs-hq/gatetest.git" "$RUNNER_TEMP/gatetest"
-            else
-              git clone --depth 1 "https://github.com/crclabs-hq/gatetest.git" "$RUNNER_TEMP/gatetest"
-            fi
-            GATETEST_HOME="$RUNNER_TEMP/gatetest"
-            ( cd "$GATETEST_HOME" && ( npm ci --omit=dev --ignore-scripts 2>/dev/null || npm install --production --ignore-scripts 2>/dev/null || true ) )
-
+            # The product fixes the product's demo: `gatetest fix --apply`
+            # scans the checkout (standard suite includes unitTests, so the
+            # failing test is a finding) and applies the AI fix in place.
+            # The former ai-ci-fixer.js path needs a failed CI run id, which
+            # a bot PR never has, so it exited in six seconds with no diff.
             FIXER_LOG=/tmp/fixer-"$NUM".log
-            if ! GITHUB_TOKEN="$GITHUB_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
-                 ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" MAX_FIX_ATTEMPTS="$MAX_FIX_ATTEMPTS" \
-                 CLAUDE_MODEL="$CLAUDE_MODEL" \
-                 node "$GATETEST_HOME/scripts/ai-ci-fixer.js" > "$FIXER_LOG" 2>&1; then
-              if grep -qE '401|403|invalid.*key|unauthorized' -i "$FIXER_LOG"; then
-                echo "::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
-                gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "${MARKER}${NL}::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
-                echo "::endgroup::"
-                continue
-              fi
+            FIXER_RC=0
+            npx --yes -p @gatetest/cli@latest gatetest fix --apply --suite standard --project . > "$FIXER_LOG" 2>&1 || FIXER_RC=$?
+            echo "::group::gatetest fix log (exit $FIXER_RC)"
+            tail -n 60 "$FIXER_LOG" || true
+            echo "::endgroup::"
+            if grep -qiE '401|403|invalid.*key|unauthorized|authentication_error' "$FIXER_LOG"; then
+              echo "::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
+              gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "${MARKER}${NL}::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
+              echo "::endgroup::"
+              continue
             fi
+            # Never commit scan artifacts; only source and tests.
+            rm -rf .gatetest
+            git checkout -- package.json package-lock.json 2>/dev/null || true
 
             echo "Re-running tests after fixer attempt on PR #$NUM..."
             if node --test tests/*.test.js > /tmp/test-out-"$NUM"-after.log 2>&1; then
               if [ -n "$(git status --porcelain)" ]; then
-                git add -A
+                git add src tests
                 git commit -m "arena(fix): $PATTERN"
                 git push origin "HEAD:$BRANCH"
                 SHA=$(git rev-parse HEAD)
