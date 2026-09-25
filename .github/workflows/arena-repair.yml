@@ -165,6 +165,11 @@ already green: \`node --test tests/*.test.js\` passes on this branch as-is. No f
                 SUMMARY=$(grep -E '^# (pass|fail) ' /tmp/test-out-"$NUM"-after.log | tr '\n' ' ')
                 gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MARKER
 Fixed and pushed. Tests: ${SUMMARY:-all green}. Commit: \`$SHA\`"
+                # Close the loop: a green fix merges here, because the
+                # check_suite-driven auto-merge never fires for bot PRs
+                # (their CI never runs — see the header). GITHUB_TOKEN may
+                # merge; it only cannot trigger further workflows.
+                gh pr merge "$NUM" --repo "$GITHUB_REPOSITORY" --squash --subject "arena(fix): $PATTERN"                   || echo "::warning::PR #$NUM fixed but not merged (branch protection or conflict) — left open"
               else
                 gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MARKER
 Tests pass after fixer ran, but it produced no diff to commit."
