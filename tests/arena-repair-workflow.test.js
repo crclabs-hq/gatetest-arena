@@ -68,7 +68,7 @@ test('only ever touches arena\\/bug- branches', () => {
   assert.match(yaml, /startswith\("arena\/bug-"\)/);
 });
 
-test('reuses the ai-ci-fixer script rather than inventing a new one', () => {
-  assert.match(yaml, /scripts\/ai-ci-fixer\.js/);
+test('runs the product fixer (gatetest fix --apply) rather than a bespoke one', () => {
+  assert.match(yaml, /gatetest fix --apply/);
   assert.match(yaml, /ANTHROPIC_API_KEY/);
 });
