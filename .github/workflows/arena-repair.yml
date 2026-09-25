@@ -135,9 +135,11 @@ jobs:
             # a bot PR never has, so it exited in six seconds with no diff.
             FIXER_LOG=/tmp/fixer-"$NUM".log
             FIXER_RC=0
-            npx --yes -p @gatetest/cli@latest gatetest fix --apply --suite standard --project . > "$FIXER_LOG" 2>&1 || FIXER_RC=$?
+            # Track the engine at crclabs-hq/GateTest main so the demo shows
+            # the product as it is today, not as of the last npm release.
+            npx --yes -p "github:crclabs-hq/GateTest#main" gatetest fix --apply --suite standard --project . > "$FIXER_LOG" 2>&1 || FIXER_RC=$?
             echo "::group::gatetest fix log (exit $FIXER_RC)"
-            tail -n 60 "$FIXER_LOG" || true
+            sed -n '1,400p' "$FIXER_LOG" || true
             echo "::endgroup::"
             if grep -qiE '401|403|invalid.*key|unauthorized|authentication_error' "$FIXER_LOG"; then
               echo "::error::AI fixer key rejected — ANTHROPIC_API_KEY on gatetest-arena is invalid (owner rotation)"
