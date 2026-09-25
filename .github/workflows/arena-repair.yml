@@ -70,8 +70,7 @@ jobs:
           set -uo pipefail
 
           MARKER='<!-- arena-repair -->'
-          NL=$'
-'
+          NL=$'\n'
           MAX_PRS=3
           processed=0
 
@@ -167,7 +166,7 @@ jobs:
                 # check_suite-driven auto-merge never fires for bot PRs
                 # (their CI never runs — see the header). GITHUB_TOKEN may
                 # merge; it only cannot trigger further workflows.
-                gh pr merge "$NUM" --repo "$GITHUB_REPOSITORY" --squash --subject "arena(fix): $PATTERN"                   || echo "::warning::PR #$NUM fixed but not merged (branch protection or conflict) — left open"
+                gh pr merge "$NUM" --repo "$GITHUB_REPOSITORY" --squash --subject "arena(fix): $PATTERN" || echo "::warning::PR #$NUM fixed but not merged (branch protection or conflict) — left open"
               else
                 gh pr comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "${MARKER}${NL}Tests pass after fixer ran, but it produced no diff to commit."
               fi
