@@ -93,6 +93,7 @@ function createPr(pattern, branch) {
   ].join('\n');
 
   const payload = {
+    draft: true, // never merged by hand; the repair loop marks it ready after its own fix
     title: `arena(bug): ${pattern.id}`,
     head: branch,
     base: 'main',
