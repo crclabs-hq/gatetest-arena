@@ -64,7 +64,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           MAX_FIX_ATTEMPTS: '3'
-          CLAUDE_MODEL: 'claude-sonnet-4-7'
+          CLAUDE_MODEL: 'claude-sonnet-5'
         run: |
           set -uo pipefail
 
