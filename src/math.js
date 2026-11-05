@@ -28,7 +28,7 @@ function divide(a, b) {
 }
 
 function isPositive(n) {
-  return n > 0;
+  return n >= 0;
 }
 
 function clamp(value, min, max) {
